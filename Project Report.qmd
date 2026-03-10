@@ -1,0 +1,28 @@
+---
+title: "Project Report"
+author: "Dominic Wooldridge, Shane Waldron, Ben Robinson, Daniel Kwong, Mason Brehmer"
+date: today
+execute:
+    warning: false
+    message: false
+format:
+  html:
+    theme: darkly
+    toc: true
+    code-fold: true
+    embed-resources: true
+---
+
+# Business Scenario and Context:
+
+The goal of this project is to identify patterns in the data that can yield business opportunities for GurtPro Inc, a yogurt and frozen food distributor whose market is typically family households.
+
+# Data Cleaning and Preparation
+
+```{python}
+import pandas as pd
+import numpy as np
+
+df = pd.read_csv("C:/Users/Owner/OneDrive/Desktop/Data Mining Project/df_prepped.csv")
+df.head()
+```
