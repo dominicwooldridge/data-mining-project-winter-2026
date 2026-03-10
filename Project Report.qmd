@@ -19,6 +19,9 @@ The goal of this project is to identify patterns in the data that can yield busi
 
 # Data Cleaning and Preparation
 
+The raw ERIM dataset was loaded from `Big_Data_Files.xlsx` and underwent 
+the following preparation steps prior to modeling.
+
 ```{python}
 import pandas as pd
 import numpy as np
@@ -26,3 +29,38 @@ import numpy as np
 df = pd.read_csv("C:/Users/Owner/OneDrive/Desktop/Data Mining Project/df_prepped.csv")
 df.head()
 ```
+
+## Missing Values
+An initial audit confirmed no missing values across any variables, so no imputation was required.
+```{python}
+df.isna().sum()
+```
+
+## Binary Encoding - Dogs & Cats
+
+The 'Dogs' and 'Cats' variables contained counts greater than 1. These were clipped to binary indicators (0/1) to reflect presence or absence of each pet type.
+
+```{python}
+df['Dogs'] = df['Dogs'].clip(lower=0, upper=1)
+df['Cats'] = df['Cats'].clip(lower=0, upper=1)
+```
+
+## Dummy Encoding
+Seven categorical variables were converted to dummy variables using 'pd.get_dummies' with 'drop_first=True' to avoid multicollinearity. The reference categories were dropped for each variable.
+
+```{python}
+df = pd.get_dummies(df, columns= ['ResType', 'ResStatus','HHInc', 'M_Rel', 'Cable', 'Cats', 'Dogs'], drop_first=True)
+```
+
+## Birth Year Exclusion
+
+'FBirth' and 'MBirth' contained a large number of zero-coded entries (96 and 767 respectively), which made deriving age unreliable, so they will be excluded in modeling.
+
+```{python}
+(df.FBirth == 0).sum()
+```
+
+```{python}
+(df.MBirth == 0).sum()
+```
+
