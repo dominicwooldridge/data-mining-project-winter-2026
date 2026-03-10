@@ -1,0 +1,241 @@
+---
+title: "ERIM Logistic Regression"
+format: html
+---
+## Load cleaned data
+```{python}
+import pandas as pd
+import numpy as np
+
+myData = pd.read_csv("/Users/danielkwong/Downloads/df_prepped.csv")
+
+print(myData.head())
+print(myData.shape)
+```
+
+We are using **logistic regression** to capture purchase decision for **yogurt** and **frozen dinner** based on information about the household from the ERIM dataset. This means that we will be setting the cutoff for the logistic regression models at **YogExp > 0** and **DinExp > 0**. 
+
+## Create the binary target variables
+```{python}
+# yogurt purchase indicator
+myData["YogBuyer"] = (myData["YogExp"] > 0).astype(int)
+
+# frozen dinner purchase indicator
+myData["DinBuyer"] = (myData["DinExp"] > 0).astype(int)
+
+print(myData[["YogExp", "DinExp", "YogBuyer", "DinBuyer"]].sample(10))
+```
+
+## Select predictor variables 
+```{python}
+predictors = [
+"HHNbr",
+"MWrkHrs",
+"FWrkHrs",
+"MEdu",
+"FEdu",
+"FAge",
+"MAge",
+"F_Rel",
+"M_Rel_2",
+"ResType_2",
+"ResType_3",
+"ResType_4",
+"ResType_5",
+"ResType_6",
+"ResStatus_2",
+"ResStatus_3",
+"Cable_1",
+"Cats_1",
+"Dogs_1",
+"HHInc_2",
+"HHInc_3",
+"HHInc_4",
+"HHInc_5",
+"HHInc_6",
+"HHInc_7",
+"HHInc_8",
+"HHInc_9",
+"HHInc_10",
+"HHInc_11",
+"HHInc_12",
+"HHInc_13",
+"HHInc_14"
+]
+
+X = myData[predictors]
+```
+
+## Define target variables 
+```{python}
+yYog = myData["YogBuyer"]
+yDin = myData["DinBuyer"]
+```
+
+## Train/test split
+```{python}
+from sklearn.model_selection import train_test_split
+
+Xtrain, Xtest, yYogTrain, yYogTest = train_test_split(
+    X, yYog, test_size=0.3, random_state=1
+)
+
+_, _, yDinTrain, yDinTest = train_test_split(
+    X, yDin, test_size=0.3, random_state=1
+)
+```
+
+## Fit logistic regression models
+```{python}
+from sklearn.linear_model import LogisticRegression
+
+yogModel = LogisticRegression(max_iter=10000)
+yogModel.fit(Xtrain, yYogTrain)
+
+dinModel = LogisticRegression(max_iter=10000)
+dinModel.fit(Xtrain, yDinTrain)
+```
+
+## Predict probabilities 
+```{python}
+yogProb = yogModel.predict_proba(Xtest)[:,1]
+dinProb = dinModel.predict_proba(Xtest)[:,1]
+```
+
+## Predict classes
+```{python}
+yogPred = yogModel.predict(Xtest)
+dinPred = dinModel.predict(Xtest)
+```
+
+## Model evaluation
+```{python}
+from sklearn.metrics import confusion_matrix, accuracy_score, roc_auc_score
+
+print("Yogurt Model")
+print(confusion_matrix(yYogTest, yogPred))
+print("Accuracy:", accuracy_score(yYogTest, yogPred))
+print("AUC:", roc_auc_score(yYogTest, yogProb))
+
+print("\nFrozen Dinner Model")
+print(confusion_matrix(yDinTest, dinPred))
+print("Accuracy:", accuracy_score(yDinTest, dinPred))
+print("AUC:", roc_auc_score(yDinTest, dinProb))
+```
+
+## ROC curve graph
+```{python}
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+
+# compute ROC values
+fprYog, tprYog, _ = roc_curve(yYogTest, yogProb)
+fprDin, tprDin, _ = roc_curve(yDinTest, dinProb)
+
+# compute AUC
+aucYog = auc(fprYog, tprYog)
+aucDin = auc(fprDin, tprDin)
+
+# plot
+plt.figure(figsize=(7,6))
+
+plt.plot(fprYog, tprYog, label=f"Yogurt Model (AUC = {aucYog:.3f})")
+plt.plot(fprDin, tprDin, label=f"Frozen Dinner Model (AUC = {aucDin:.3f})")
+
+# random classifier line
+plt.plot([0,1], [0,1], linestyle="--")
+
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve – Logistic Regression Models")
+plt.legend()
+
+plt.show()
+```
+
+## Feature importance for Yogurt Purchase
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# get coefficients
+coef = pd.Series(yogModel.coef_[0], index=X.columns)
+coef = coef.sort_values()
+
+# color bars based on sign
+colors = ["darkred" if c < 0 else "steelblue" for c in coef]
+
+plt.figure(figsize=(8,12))
+
+bars = plt.barh(coef.index, coef.values, color=colors)
+
+# x-axis ticks every 0.1
+xmin = coef.min() - 0.1
+xmax = coef.max() + 0.1
+ticks = np.arange(round(xmin,1), round(xmax,1)+0.1, 0.1)
+plt.xticks(ticks)
+
+# vertical dotted gridlines
+plt.grid(axis="x", linestyle=":", color="lightgrey")
+
+# bold vertical zero line
+plt.axvline(0, color="black", linewidth=1)
+
+# add coefficient labels
+for i, v in enumerate(coef.values):
+    
+    if v >= 0:
+        plt.text(v + 0.02, i, f"{v:.2f}", va="center")
+    else:
+        plt.text(v - 0.02, i, f"{v:.2f}", va="center", ha="right")
+
+plt.xlabel("Coefficient Value")
+plt.title("Drivers of Yogurt Purchase")
+
+plt.tight_layout()
+plt.show()
+```
+
+## Feature importance for Frozen Dinner Purchase
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# get coefficients
+coef = pd.Series(dinModel.coef_[0], index=X.columns)
+coef = coef.sort_values()
+
+# color bars based on sign
+colors = ["darkred" if c < 0 else "steelblue" for c in coef]
+
+plt.figure(figsize=(8,12))
+
+plt.barh(coef.index, coef.values, color=colors)
+
+# x-axis ticks every 0.1
+xmin = coef.min() - 0.1
+xmax = coef.max() + 0.1
+ticks = np.arange(round(xmin,1), round(xmax,1) + 0.1, 0.1)
+plt.xticks(ticks)
+
+# light grey dotted vertical lines
+plt.grid(axis="x", linestyle=":", color="lightgrey")
+
+# zero line
+plt.axvline(0, color="black", linewidth=1)
+
+# add coefficient labels
+for i, v in enumerate(coef.values):
+    if v >= 0:
+        plt.text(v + 0.02, i, f"{v:.2f}", va="center")
+    else:
+        plt.text(v - 0.02, i, f"{v:.2f}", va="center", ha="right")
+
+plt.xlabel("Coefficient Value")
+plt.title("Drivers of Frozen Dinner Purchase")
+
+plt.tight_layout()
+plt.show()
+```
