@@ -18,6 +18,9 @@ format:
 # Setup + Load Data
 
 ```{python}
+# =========================
+# Full setup chunk (with robust HHInc binning)
+# =========================
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,14 +31,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_curve, auc, classification_report
-```
+from sklearn.metrics import classification_report, roc_curve, auc
 
-# Read and Clean Column Names
-
-```{python}
+# 1) Load
 df = pd.read_csv("df_prepped.csv")
 
+# 2) Standardize column names
 df.columns = (
     df.columns.str.strip()
     .str.lower()
@@ -43,110 +44,133 @@ df.columns = (
     .str.strip("_")
 )
 
-# drop leftover index columns like unnamed_0
+# 3) Cleanup
 df = df.loc[:, ~df.columns.str.contains(r"^unnamed", case=False)]
-
-# drop household identifier (not a predictive/business feature)
 df = df.drop(columns=["hh_id"], errors="ignore")
 
-# convert bool predictors to int so sklearn pipeline handles cleanly
+# Optional drops you requested previously
+df = df.drop(columns=["dinexp", "fage", "fbirth", "mbirth", "mage"], errors="ignore")
+
+# 4) Ensure bool columns are numeric
 bool_cols = df.select_dtypes(include=["bool"]).columns
 df[bool_cols] = df[bool_cols].astype(int)
 
-print(df.shape)
+# 5) Robust HHInc binning into: 0-4, 4-9, 9-14
+# Works whether df has raw 'hhinc' or one-hot 'hhinc_*'
+hhinc_dummies = [c for c in df.columns if c.startswith("hhinc_")]
+
+if "hhinc" in df.columns:
+    df["hhinc"] = pd.to_numeric(df["hhinc"], errors="coerce")
+    df["hhinc_bin"] = pd.cut(
+        df["hhinc"],
+        bins=[0, 4, 9, 14],
+        labels=["0-4", "4-9", "9-14"],
+        include_lowest=True,
+        right=True
+    )
+    df = df.drop(columns=["hhinc"], errors="ignore")
+
+elif hhinc_dummies:
+    tmp = df[hhinc_dummies].apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    # If rows are one-hot encoded, this retrieves the active category.
+    # If multiple are 1, idxmax picks the first max column.
+    chosen = tmp.idxmax(axis=1).str.extract(r"hhinc_(\d+)")[0]
+    chosen = pd.to_numeric(chosen, errors="coerce")
+
+    df["hhinc_bin"] = pd.cut(
+        chosen,
+        bins=[0, 4, 9, 14],
+        labels=["0-4", "4-9", "9-14"],
+        include_lowest=True,
+        right=True
+    )
+
+    # Drop old one-hot income columns so model uses bins only
+    df = df.drop(columns=hhinc_dummies, errors="ignore")
+
+else:
+    # keep workflow running even if no income source found
+    df["hhinc_bin"] = pd.Series([pd.NA] * len(df), dtype="object")
+
+# 6) Create binary target: top 25% YogExp = high spender
+if "yogexp" not in df.columns:
+    raise ValueError("Column 'yogexp' is missing from dataset.")
+
+yog_cut = df["yogexp"].quantile(0.75)
+df["high_yogexp"] = (df["yogexp"] >= yog_cut).astype(int)
+
+# 7) Quick checks
+print("Shape:", df.shape)
+print("YogExp cutoff:", yog_cut)
+print("Class balance (high_yogexp mean):", round(df["high_yogexp"].mean(), 4))
+print("\nHHInc bin counts:")
+print(df["hhinc_bin"].value_counts(dropna=False))
+print("\nPreview:")
 print(df.head(3))
 
 
 ```
 
-# Create Binary Targets (High YogExp / High DinExp)
-
 ```{python}
-# Use 75th percentile cutoff for "high spender" classes
-yog_cut = df["yogexp"].quantile(0.75)
-din_cut = df["dinexp"].quantile(0.75)
-
-df["high_yogexp"] = (df["yogexp"] >= yog_cut).astype(int)
-df["high_dinexp"] = (df["dinexp"] >= din_cut).astype(int)
-
-print("YogExp cutoff:", yog_cut)
-print("DinExp cutoff:", din_cut)
-print(df[["high_yogexp", "high_dinexp"]].mean())  # class balance
+# Add this right after loading/cleaning df
+df = df.drop(columns=["dinexp","fage", "fbirth", "mbirth", "mage"], errors="ignore")
 ```
 
-# Shared Helper Function (Train RF + ROC + Feature Importance)
-
 ```{python}
-def run_rf_classifier(data, target_col, drop_cols):
-    work = data[data[target_col].notna()].copy()
+# =========================
+# 2) Pipeline + classification
+# =========================
+drop_cols = ["yogexp", "high_yogexp"]  # remove target + leakage
+X = df.drop(columns=drop_cols, errors="ignore")
+y = df["high_yogexp"].astype(int)
 
-    X = work.drop(columns=drop_cols, errors="ignore")
-    y = work[target_col].astype(int)
+num_cols = X.select_dtypes(include=np.number).columns.tolist()
+cat_cols = [c for c in X.columns if c not in num_cols]
 
-    num_cols = X.select_dtypes(include=np.number).columns.tolist()
-    cat_cols = [c for c in X.columns if c not in num_cols]
+preprocess = ColumnTransformer([
+    ("num", Pipeline([("imp", SimpleImputer(strategy="median"))]), num_cols),
+    ("cat", Pipeline([
+        ("imp", SimpleImputer(strategy="most_frequent")),
+        ("oh", OneHotEncoder(handle_unknown="ignore"))
+    ]), cat_cols)
+])
 
-    preprocess = ColumnTransformer([
-        ("num", Pipeline([("imp", SimpleImputer(strategy="median"))]), num_cols),
-        ("cat", Pipeline([
-            ("imp", SimpleImputer(strategy="most_frequent")),
-            ("oh", OneHotEncoder(handle_unknown="ignore"))
-        ]), cat_cols)
-    ])
+rf_clf = Pipeline([
+    ("prep", preprocess),
+    ("rf", RandomForestClassifier(
+        n_estimators=500,
+        random_state=42,
+        n_jobs=-1,
+        class_weight="balanced"
+    ))
+])
 
-    clf = Pipeline([
-        ("prep", preprocess),
-        ("rf", RandomForestClassifier(
-            n_estimators=500,
-            random_state=42,
-            n_jobs=-1,
-            class_weight="balanced"
-        ))
-    ])
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42, stratify=y
-    )
-
-    clf.fit(X_train, y_train)
-
-    proba = clf.predict_proba(X_test)[:, 1]
-    pred = clf.predict(X_test)
-
-    fpr, tpr, _ = roc_curve(y_test, proba)
-    roc_auc = auc(fpr, tpr)
-
-    # feature importance
-    feat_names = clf.named_steps["prep"].get_feature_names_out()
-    importances = clf.named_steps["rf"].feature_importances_
-    fi = (
-        pd.DataFrame({"feature": feat_names, "importance": importances})
-        .sort_values("importance", ascending=False)
-        .reset_index(drop=True)
-    )
-
-    print(classification_report(y_test, pred))
-    print("AUC:", round(roc_auc, 4))
-
-    return clf, fpr, tpr, roc_auc, fi
-```
-
-
-# Random Forest for YogExp (Classification)
-
-```{python}
-# Predict high_yogexp; remove leakage columns
-drop_for_yog = ["yogexp", "dinexp", "high_yogexp", "high_dinexp"]
-
-rf_yog, fpr_yog, tpr_yog, auc_yog, fi_yog = run_rf_classifier(
-    df, target_col="high_yogexp", drop_cols=drop_for_yog
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42, stratify=y
 )
+
+rf_clf.fit(X_train, y_train)
+
+y_pred = rf_clf.predict(X_test)
+y_prob = rf_clf.predict_proba(X_test)[:, 1]
+
+print(classification_report(y_test, y_pred))
+
 ```
 
-# ROC Curve for YogExp
+
 ```{python}
+# =========================
+# 3) ROC curve
+# =========================
+fpr, tpr, _ = roc_curve(y_test, y_prob)
+roc_auc = auc(fpr, tpr)
+
+print("AUC:", round(roc_auc, 4))
+
 plt.figure(figsize=(7, 5))
-plt.plot(fpr_yog, tpr_yog, label=f"RF YogExp (AUC={auc_yog:.3f})")
+plt.plot(fpr, tpr, label=f"RF YogExp (AUC={roc_auc:.3f})")
 plt.plot([0, 1], [0, 1], "k--", label="Baseline")
 plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
@@ -154,11 +178,23 @@ plt.title("ROC Curve: High YogExp")
 plt.legend(loc="lower right")
 plt.tight_layout()
 plt.show()
+
 ```
 
-# Feature Importance for YogExp
 
 ```{python}
+# =========================
+# 4) Feature importance
+# =========================
+feature_names = rf_clf.named_steps["prep"].get_feature_names_out()
+importances = rf_clf.named_steps["rf"].feature_importances_
+
+fi_yog = (
+    pd.DataFrame({"feature": feature_names, "importance": importances})
+    .sort_values("importance", ascending=False)
+    .reset_index(drop=True)
+)
+
 top_n = 20
 print(fi_yog.head(top_n))
 
@@ -169,47 +205,5 @@ plt.title("Top Feature Importance: High YogExp (RF)")
 plt.xlabel("Importance")
 plt.tight_layout()
 plt.show()
-```
-
-# Random Forest for DinExp
-
-```{python}
-# Predict high_dinexp; remove leakage columns
-drop_for_din = ["yogexp", "dinexp", "high_yogexp", "high_dinexp"]
-
-rf_din, fpr_din, tpr_din, auc_din, fi_din = run_rf_classifier(
-    df, target_col="high_dinexp", drop_cols=drop_for_din
-)
 
 ```
-
-# ROC Curve for DinExp
-
-
-```{python}
-plt.figure(figsize=(7, 5))
-plt.plot(fpr_din, tpr_din, label=f"RF DinExp (AUC={auc_din:.3f})", color="tab:orange")
-plt.plot([0, 1], [0, 1], "k--", label="Baseline")
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("ROC Curve: High DinExp")
-plt.legend(loc="lower right")
-plt.tight_layout()
-plt.show()
-```
-
-# Feature Importance for DinExp
-```{python}
-top_n = 20
-print(fi_din.head(top_n))
-
-plt.figure(figsize=(8, 6))
-plot_df = fi_din.head(top_n).iloc[::-1]
-plt.barh(plot_df["feature"], plot_df["importance"], color="tab:orange")
-plt.title("Top Feature Importance: High DinExp (RF)")
-plt.xlabel("Importance")
-plt.tight_layout()
-plt.show()
-```
-
-
